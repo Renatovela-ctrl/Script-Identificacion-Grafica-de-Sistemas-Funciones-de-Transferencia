@@ -1,0 +1,187 @@
+clc; clear; close all;
+
+% =========================================================
+% --- DATOS ---
+% =========================================================
+% Cargando datos según Tarea 1
+datos = readtable('data_motor.csv');
+tM = datos.time_t_;
+uM = datos.ex_signal_u_;
+yM = datos.system_response_y_;
+
+% =========================================================
+% --- PARAMETROS BASE Y ESTADO ESTACIONARIO ---
+% =========================================================
+u_max = max(uM);
+y_base = mean(yM(1:10));         % Promedio de la línea base (robusto ante ruido)
+y_est = mean(yM(end-20:end));    % Línea 100% (Promedio del estado estable final)
+delta_y = y_est - y_base;
+
+km = delta_y / u_max;            % Ganancia K universal para los modelos
+idx_u = find(uM > 0, 1);
+t0 = tM(idx_u);                  % Instante donde se aplica el escalón
+
+% =========================================================
+% --- METODO 3 (ZIEGLER-NICHOLS) ---
+% Se calcula primero porque Miller necesita su valor de Theta
+% =========================================================
+dy = diff(yM)./diff(tM);
+[m, im] = max(dy); % Pendiente máxima (punto de inflexión)
+tm = tM(im);
+ym = yM(im);
+
+% Intersecciones de la recta tangente
+t1 = tm - (ym - y_base)/m;       % Punto de corte con línea base 
+t2 = tm + (y_est - ym)/m;        % Punto de corte con línea 100% 
+
+theta_zn = t1 - t0;
+tau_zn = t2 - t1;
+
+G3 = tf(km, [tau_zn 1], 'InputDelay', theta_zn);
+ym3 = lsim(G3, uM, tM);
+
+% =========================================================
+% --- METODO 2 (MILLER) ---
+% Diapositiva: Hereda Theta de ZN y busca tau en el 63.2%
+% =========================================================
+y63 = y_base + 0.632 * delta_y;
+i63 = find(yM >= y63, 1);
+t63 = tM(i63) - t0;              % Tiempo relativo desde el escalón al 63.2%
+
+theta_miller = theta_zn;         % Heredado de Ziegler-Nichols
+tau_miller = t63 - theta_miller; % Según diapositiva: alcanza 63.2% en t = tau + theta
+
+G2 = tf(km, [tau_miller 1], 'InputDelay', theta_miller);
+ym2 = lsim(G2, uM, tM);
+
+% =========================================================
+% --- METODO 1 (ANALÍTICO / 2 PUNTOS) ---
+% Diapositiva: Usa 28.4% (t1) y 63.2% (t2)
+% =========================================================
+y28 = y_base + 0.284 * delta_y;
+i28 = find(yM >= y28, 1);
+t28 = tM(i28) - t0;              % Tiempo en 28.4%
+
+% t63 ya está calculado arriba
+% Resolviendo el sistema: t28 = theta + tau/3  y  t63 = theta + tau
+tau_ana = 1.5 * (t63 - t28);
+theta_ana = t63 - tau_ana;
+
+G1 = tf(km, [tau_ana 1], 'InputDelay', theta_ana);
+ym1 = lsim(G1, uM, tM);
+
+% =========================================================
+% --- METODO 0 (TANTEO) ---
+% =========================================================
+km0 = 0.67;
+tau0 = 0.55;
+theta0 = 0.14;
+G0 = tf(km0, [tau0 1], 'InputDelay', theta0);
+ym0 = lsim(G0, uM, tM);
+
+% =========================================================
+% --- FIT (%) ---
+% =========================================================
+fit0 = 100*(1 - norm(yM - ym0)/norm(yM - mean(yM)));
+fit1 = 100*(1 - norm(yM - ym1)/norm(yM - mean(yM)));
+fit2 = 100*(1 - norm(yM - ym2)/norm(yM - mean(yM)));
+fit3 = 100*(1 - norm(yM - ym3)/norm(yM - mean(yM)));
+
+fprintf('FIT metodo 0 (Tanteo): %.2f %%\n', fit0);
+fprintf('FIT metodo 1 (Analitico): %.2f %%\n', fit1);
+fprintf('FIT metodo 2 (Miller): %.2f %%\n', fit2);
+fprintf('FIT metodo 3 (Z-N): %.2f %%\n', fit3);
+
+% --- TABLA DE FUNCIONES DE TRANSFERENCIA ---
+Metodo = {'Analitico'; 'Miller'; 'Ziegler-Nichols'};
+Theta = round([theta_ana; theta_miller; theta_zn], 4);
+Tau = round([tau_ana; tau_miller; tau_zn], 4);
+K = round([km; km; km], 4);
+FT = strings(3,1);
+for i = 1:3
+    FT(i) = sprintf('%.4f/(%.4fs + 1) e^{-%.4fs}', K(i), Tau(i), Theta(i));
+end
+Tabla = table(Metodo, K, Tau, Theta, FT);
+disp(' ');
+disp('Tabla de Funciones de Transferencia:');
+disp(Tabla);
+
+% =========================================================
+% --- GRAFICA 1: IDENTIFICACIÓN (CON TANGENTE) ---
+% =========================================================
+fig1 = figure('Name', 'Tarea 2: Identificacion Grafica');
+plot(tM, yM, 'k', 'LineWidth', 1.5); hold on;
+plot(tM, uM, 'g', 'LineWidth', 1.2); 
+yline(y_base, '--r', 'Linea Base'); 
+yline(y_est, '--b', 'Linea 100%'); 
+plot([t1 t2], [y_base y_est], 'r', 'LineWidth', 2); % Recta tangente proyectada 
+grid on;
+legend('Respuesta y(t)', 'Excitacion u(t)', 'Línea Base', 'Línea 100%', 'Recta Tangente', 'Location','best');
+title('Identificacion Grafica de Parametros (Ziegler-Nichols)');
+xlabel('Tiempo (s)'); ylabel('Amplitud');
+exportgraphics(fig1, 'Fig1_Identificacion_ZN.png', 'Resolution', 300);
+
+% =========================================================
+% --- GRAFICA 2: COMPARACIÓN DE MODELOS --- 
+% =========================================================
+fig2 = figure('Name', 'Tarea 3: Comparacion de Modelos', 'Color', 'w');
+hold on;
+plot(tM, yM, 'k', 'LineWidth', 2.5);
+plot(tM, uM, 'Color', [0 0.6 0], 'LineWidth', 1.5);
+yline(y_base, '--', 'Color', [0.3 0.3 0.3], 'LineWidth', 1);
+yline(y_est, '--', 'Color', [0.3 0.3 0.3], 'LineWidth', 1);
+plot(tM, ym0, 'Color', [0 0.7 0.7], 'LineStyle', '--', 'LineWidth', 1.5);
+plot(tM, ym1, 'r--', 'LineWidth', 1.5);
+plot(tM, ym2, 'm-.', 'LineWidth', 1.5);
+plot(tM, ym3, 'b:', 'LineWidth', 1.8);
+grid on; box on;
+xlabel('Tiempo (s)', 'FontSize', 11);
+ylabel('Salida', 'FontSize', 11);
+title('Comparación de Métodos FOTD', 'FontSize', 13, 'FontWeight', 'bold');
+legend({'Real', 'Escalón', 'Línea Base', 'Línea 100%', 'm0 Tanteo', 'm1 Analítico', 'm2 Miller', 'm3 ZN'}, 'Location', 'best');
+xlim([min(tM) max(tM)]);
+exportgraphics(fig2, 'Fig2_Comparacion_Modelos.png', 'Resolution', 300);
+
+% =========================================================
+% --- TAREA 5: ANÁLISIS DE SENSIBILIDAD ---
+% =========================================================
+% Variación de K
+fig3 = figure('Name', 'Tarea 5: Sensibilidad de Ganancia K');
+hold on;
+for Ki = 0:0.5:3
+    G_temp = tf(Ki, [tau_miller 1], 'InputDelay', theta_miller);
+    y_temp = lsim(G_temp, uM, tM);
+    plot(tM, y_temp, 'DisplayName', ['K = ', num2str(Ki)]);
+end
+plot(tM, yM, 'k:', 'LineWidth', 1.5, 'DisplayName', 'Real');
+grid on; legend('Location','best'); title('Impacto de la Ganancia (K)');
+xlabel('Tiempo (s)'); ylabel('Respuesta');
+exportgraphics(fig3, 'Fig3_Sensibilidad_K.png', 'Resolution', 300);
+
+% Variación de Tau
+fig4 = figure('Name', 'Tarea 5: Sensibilidad de Constante de Tiempo Tau');
+hold on;
+for tau_i = [0.1, 0.3, 0.6, 1.2]
+    G_temp = tf(km, [tau_i 1], 'InputDelay', theta_miller);
+    y_temp = lsim(G_temp, uM, tM);
+    plot(tM, y_temp, 'DisplayName', ['\tau = ', num2str(tau_i)]);
+end
+plot(tM, yM, 'k:', 'LineWidth', 1.5, 'DisplayName', 'Real');
+grid on; legend('Location','best'); title('Impacto de la Constante de Tiempo (\tau)');
+xlabel('Tiempo (s)'); ylabel('Respuesta');
+exportgraphics(fig4, 'Fig4_Sensibilidad_Tau.png', 'Resolution', 300);
+
+% Variación de Theta
+fig5 = figure('Name', 'Tarea 5: Sensibilidad de Constante de Fase Theta');
+hold on;
+for theta_i = [0.05, 0.10, 0.15, 0.25]
+    G_temp = tf(km, [tau_miller 1], 'InputDelay', theta_i);
+    y_temp = lsim(G_temp, uM, tM);
+    plot(tM, y_temp, 'DisplayName', ['\theta = ', num2str(theta_i)]);
+end
+plot(tM, yM, 'k:', 'LineWidth', 1.5, 'DisplayName', 'Real');
+grid on; legend('Location','best'); title('Impacto del Retardo (\theta)');
+xlabel('Tiempo (s)'); ylabel('Respuesta');
+exportgraphics(fig5, 'Fig5_Sensibilidad_Theta.png', 'Resolution', 300);
+
+disp('Script finalizado. Las imágenes se han guardado en el directorio actual.');
